@@ -152,11 +152,27 @@ watchdog. The OTAFIX bootloader was verified (source) to feed a running WDT
 during DFU, so OTA updates are unaffected; nodes still on the 2021 stock
 bootloader should get OTAFIX before receiving watchdog firmware.
 
-Root cause of the lockup remains open. Leading suspicion: SoftDevice flash
-writes (full contacts-file rewrite) contending with an active BLE connection.
-Candidate fixes: defer contact saves while a connection is active; atomic
-temp-file+rename saves; expose reset/shutdown reason via device stats so
-watchdog resets are observable.
+Root cause found via serial logging + elimination: **corrupt LittleFS
+(ExtraFS) metadata makes any flash write hang forever** (`LFS_NO_ASSERT=1`
+lets LittleFS loop in corrupted structures instead of asserting). Every
+trigger fit once this was known: contact saves (5 s after favoriting),
+advert-blob writes (any received advert), regardless of BLE connection
+state. Each hung save also wiped contacts, because saves delete the file
+before rewriting. A "flash write during BLE connection" contention theory
+was tested by deferring saves while connected (wdt2) — disproven when the
+node locked up anyway via the advert-blob path; the deferral was reverted
+(wdt3). Erasing the filesystem (web flasher erase utility) fixed the node
+completely: wdt3 with stock save behavior is stable on a healthy FS.
+
+Watchdog behavior confirmed by the serial log: freeze at the lazy-save
+moment, USB alive throughout (only the main loop was stuck), watchdog reset
+64 s after last output — on spec.
+
+Still worth pursuing upstream: atomic temp-file+rename saves (a hung/
+interrupted save should not delete the old contacts file); LittleFS
+corruption detection instead of infinite loops (LFS_NO_ASSERT trade-off);
+exposing reset/shutdown reason via device stats so watchdog resets are
+observable from the app.
 
 OTA update notes (companions): no `start ota` needed — the DFU service rides
 the normal BLE connection (v1.15+). On iOS use the "nRF Device Firmware
