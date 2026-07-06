@@ -2234,20 +2234,8 @@ void MyMesh::loop() {
 
   // is there are pending dirty contacts write needed?
   if (dirty_contacts_expiry && millisHasNowPassed(dirty_contacts_expiry)) {
-#if defined(NRF52_PLATFORM) && defined(BLE_PIN_CODE)
-    // Bulk flash writes while a BLE connection is active can deadlock the
-    // main loop waiting on a SoftDevice flash event (observed on RAK4631,
-    // recovered only by watchdog). Defer the save until after disconnect.
-    if (_serial->isConnected()) {
-      dirty_contacts_expiry = futureMillis(5000);  // re-check later
-    } else {
-      saveContacts();
-      dirty_contacts_expiry = 0;
-    }
-#else
     saveContacts();
     dirty_contacts_expiry = 0;
-#endif
   }
 
 #ifdef DISPLAY_CLASS
