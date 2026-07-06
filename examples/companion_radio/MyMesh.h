@@ -12,7 +12,7 @@
 #endif
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "v1.16.0-pr2089-wdt2"
+#define FIRMWARE_VERSION "v1.16.0-pr2089-wdt3"
 #endif
 
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
