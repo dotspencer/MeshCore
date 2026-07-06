@@ -135,6 +135,34 @@ The PR #2089 patch was then verified live: an unpaired BLE connection from a Mac
 (bleak, no pairing) was force-disconnected by the node after ~13.6 s and
 advertising resumed immediately. Stock firmware holds such a connection forever.
 
+## Field update (2026-07-06, `sm-henry`)
+
+A fourth node (OTAFIX bootloader + patched firmware) locked up **twice in one
+day**, both times during/just after an app connection — once seconds after
+favoriting a contact (which schedules a full contacts-file flash rewrite 5 s
+later). First incident: full lockup (USB dead, no advertising, blue LED
+latched frozen); single reset recovered it, contacts intact. This proved the
+BLE security timeout does not cover this failure mode and motivated the
+hardware watchdog (nRF52 WDT, 60 s, fed from the companion main loop —
+`v1.16.0-pr2089-wdt`).
+
+Second incident, now running the watchdog build: node self-recovered in about
+a minute and the app auto-reconnected — first field validation of the
+watchdog. The OTAFIX bootloader was verified (source) to feed a running WDT
+during DFU, so OTA updates are unaffected; nodes still on the 2021 stock
+bootloader should get OTAFIX before receiving watchdog firmware.
+
+Root cause of the lockup remains open. Leading suspicion: SoftDevice flash
+writes (full contacts-file rewrite) contending with an active BLE connection.
+Candidate fixes: defer contact saves while a connection is active; atomic
+temp-file+rename saves; expose reset/shutdown reason via device stats so
+watchdog resets are observable.
+
+OTA update notes (companions): no `start ota` needed — the DFU service rides
+the normal BLE connection (v1.15+). On iOS use the "nRF Device Firmware
+Update" app with Packet receipt notifications ON (10 packets); nRF Connect
+and Bluefruit Connect both stall at 0% against the 2021 bootloader.
+
 ## Build notes
 
 - PlatformIO (installed in a venv): `pio run -e RAK_4631_companion_radio_ble`
