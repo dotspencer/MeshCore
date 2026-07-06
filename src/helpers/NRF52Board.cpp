@@ -277,6 +277,23 @@ void NRF52Board::sleep(uint32_t secs) {
   }
 }
 
+void NRF52Board::startWatchdog(uint32_t seconds) {
+  if (NRF_WDT->RUNSTATUS & WDT_RUNSTATUS_RUNSTATUS_Msk) {
+    return;  // already running (can't be stopped or reconfigured)
+  }
+  // Keep counting while the CPU sleeps (catches frozen states), pause while
+  // halted by a debugger.
+  NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
+                    (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV = seconds * 32768;  // 32.768 kHz ticks
+  NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+  NRF_WDT->TASKS_START = 1;
+}
+
+void NRF52Board::feedWatchdog() {
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+}
+
 // Temperature from NRF52 MCU
 float NRF52Board::getMCUTemperature() {
   NRF_TEMP->TASKS_START = 1; // Start temperature measurement

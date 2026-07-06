@@ -162,6 +162,15 @@ void setup() {
   serial_interface.begin(Serial);
 #endif
   the_mesh.startInterface(serial_interface);
+
+#if defined(NRF52_PLATFORM)
+  #ifndef WATCHDOG_TIMEOUT_SECS
+    #define WATCHDOG_TIMEOUT_SECS 60
+  #endif
+  #if WATCHDOG_TIMEOUT_SECS > 0
+  board.startWatchdog(WATCHDOG_TIMEOUT_SECS);
+  #endif
+#endif
 #elif defined(RP2040_PLATFORM)
   LittleFS.begin();
   store.begin();
@@ -249,6 +258,10 @@ void loop() {
   ui_task.loop();
 #endif
   rtc_clock.tick();
+
+#if defined(NRF52_PLATFORM) && WATCHDOG_TIMEOUT_SECS > 0
+  board.feedWatchdog();
+#endif
 
   if (!the_mesh.hasPendingWork()) {
 #if defined(NRF52_PLATFORM)

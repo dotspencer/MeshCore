@@ -55,6 +55,13 @@ public:
   virtual void sleep(uint32_t secs) override;
   bool isExternalPowered() override;
 
+  // Hardware watchdog: recovers the node from full lockups (e.g. SoftDevice
+  // faults during flash writes) that freeze the CPU with interrupts dead.
+  // Once started, the WDT cannot be stopped and survives soft resets, so the
+  // bootloader must feed it during DFU (Adafruit/OTAFIX bootloaders do).
+  void startWatchdog(uint32_t seconds);
+  void feedWatchdog();
+
 #ifdef NRF52_POWER_MANAGEMENT
   uint16_t getBootVoltage() override { return boot_voltage_mv; }
   virtual uint32_t getResetReason() const override { return reset_reason; }
