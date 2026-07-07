@@ -213,6 +213,35 @@ v2). Findings — the corruption theory observed in the raw for the first time:
 - The bootloader's CURRENT.UF2 only exposes flash up to `0xEA000`: most of
   ExtraFS but not its last 12 KB, and none of InternalFS (`0xED000+`).
 
+## Corruption origin (2026-07-07, source-verified)
+
+How the FS gets corrupt in the first place — the Adafruit core's flash layer
+voids littlefs's power-loss guarantees:
+
+- 128-byte littlefs blocks are emulated on 4KB physical pages via a
+  single-page RAM cache (`flash_cache.c`): each flush **erases and rewrites
+  the whole 4KB page**, i.e. one block update rewrites 32 blocks, 31 of them
+  committed data littlefs assumes are untouchable. Interruption mid-flush
+  (battery pull, reset, double-tap into DFU) destroys them. The superblock +
+  root dir pair share the first 4KB page, rewritten on every dir commit —
+  corruption there is the boot-crash-loop variant (sm-window-1).
+- `flash_cache_flush()` **ignores the return values** of erase/program;
+  `fal_erase`/`fal_sub_program` (`flash_nrf5x.c`) retry a few times (SoftDevice
+  flash ops yield to radio and can stay busy under BLE+LoRa load) then fail
+  silently. Metadata then commits pointing at never-written blocks; a
+  silently-failed erase followed by program AND-merges old and new bits —
+  consistent with the coherent garbage found in sm-max's block 497. The 4KB
+  program is also split into two half-page `sd_flash_write` calls (S140
+  workaround), adding a mid-page failure window.
+- Advert-driven write frequency (blob write + contacts rewrite per advert)
+  runs hundreds of erase cycles/day through that one hot metadata page.
+
+Stacked with the firmware's choices (128-byte blocks, LFS_NO_ASSERT,
+delete-then-rewrite, auto-format on mount failure, no watchdog), corruption
+is an eventual certainty on any node that power-cycles at the wrong moment.
+Candidate real fix upstream: 4096-byte littlefs blocks for ExtraFS (logical
+block == erase page) or an atomic/journaled cache flush in the core.
+
 OTA update notes (companions): no `start ota` needed — the DFU service rides
 the normal BLE connection (v1.15+). On iOS use the "nRF Device Firmware
 Update" app with Packet receipt notifications ON (10 packets); nRF Connect
