@@ -174,6 +174,45 @@ corruption detection instead of infinite loops (LFS_NO_ASSERT trade-off);
 exposing reset/shutdown reason via device stats so watchdog resets are
 observable from the app.
 
+## Forensic confirmation (2026-07-07, `sm-max`)
+
+`sm-max` (freshly flashed to wdt3 that morning) showed empty contacts on
+connect. Instead of erasing blind, the flash was dumped via the bootloader
+(`CURRENT.UF2`, read-only) and the ExtraFS partition dissected offline with
+the framework's own littlefs **v1.7** code compiled for the host
+(128-byte blocks, 800 blocks at `0xD4000`; note littlefs-python only speaks
+v2). Findings — the corruption theory observed in the raw for the first time:
+
+- FS mounts fine; `channels2` reads out intact. Not a global wipe.
+- `/contacts3` exists with **size 0, head 0xFFFFFFFF**. The previous
+  directory revision (other block of the pair) has **no contacts3 entry at
+  all** — i.e. `openWrite()`'s `remove()` committed, the re-create
+  committed, and the data write never completed. The delete-then-rewrite
+  hazard frozen in flash.
+- `/adv_blobs` (18000 bytes) is unreadable: its directory entry points to
+  head block 497, but block 497's skip-list pointer word reads
+  `0x7f80f5b5` (block ~2.1 billion of 800) — the block was overwritten
+  with what looks like file data while still referenced. The host tool
+  asserts here (`lfs_ctz_find: head >= 2 && head <= block_count`); the
+  device build has `LFS_NO_ASSERT=1`, so it chases the garbage pointer
+  forever — the write-hang, caught in the act.
+- Every save then repeats: allocator traversal walks the corrupt chain →
+  infinite loop → watchdog reset → contacts3 left empty. Reflashing
+  firmware cannot fix it; only an FS erase can.
+- Old contacts3 versions survive in freed (unerased) blocks. Rebuilding
+  CTZ chains forward from candidate index-0 blocks recovered **54 contacts
+  including favorites** (last successful save ~18 h earlier) plus the
+  channel list with secrets. Tooling preserved in `~/Documents/MeshCore/`
+  (`lfs1_extract.c`, `carve_contacts.py`, partition image, flash dump).
+- Timing note: the last successful contacts save was the evening before,
+  so the corruption struck within ~18 h — bracketing the morning
+  bootloader-flash session (double-tap reset can interrupt a running
+  save; littlefs v1's CoW should tolerate that, but the overwritten
+  live block suggests its allocator can be fooled by a prior interrupted
+  state).
+- The bootloader's CURRENT.UF2 only exposes flash up to `0xEA000`: most of
+  ExtraFS but not its last 12 KB, and none of InternalFS (`0xED000+`).
+
 OTA update notes (companions): no `start ota` needed — the DFU service rides
 the normal BLE connection (v1.15+). On iOS use the "nRF Device Firmware
 Update" app with Packet receipt notifications ON (10 packets); nRF Connect
