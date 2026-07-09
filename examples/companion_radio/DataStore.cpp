@@ -31,10 +31,17 @@ DataStore::DataStore(FILESYSTEM& fs, FILESYSTEM& fsExtra, mesh::RTCClock& clock)
 }
 #endif
 
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+// saves are written to a temp file, then commitWrite() renames it over the
+// target (a single dir commit in littlefs), so an interrupted or hung save
+// can never destroy the previous copy of the file
+#define WRITE_TMP_NAME "/.wtmp"
+#endif
+
 static File openWrite(FILESYSTEM* fs, const char* filename) {
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
-  fs->remove(filename);
-  return fs->open(filename, FILE_O_WRITE);
+  fs->remove(WRITE_TMP_NAME);
+  return fs->open(WRITE_TMP_NAME, FILE_O_WRITE);
 #elif defined(RP2040_PLATFORM)
   return fs->open(filename, "w");
 #else
@@ -42,8 +49,18 @@ static File openWrite(FILESYSTEM* fs, const char* filename) {
 #endif
 }
 
+static void commitWrite(FILESYSTEM* fs, File& file, const char* filename) {
+  file.close();
+#if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+  if (!fs->rename(WRITE_TMP_NAME, filename)) {
+    MESH_DEBUG_PRINTLN("DataStore: commitWrite rename to %s failed!", filename);
+  }
+#endif
+}
+
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   static uint32_t _ContactsChannelsTotalBlocks = 0;
+  lfs_ssize_t _getLfsUsedBlockCount(FILESYSTEM* fs);
 #endif
 
 void DataStore::begin() {
@@ -53,6 +70,19 @@ void DataStore::begin() {
 
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
   _ContactsChannelsTotalBlocks = _getContactsChannelsFS()->_getFS()->cfg->block_count;
+  #if defined(EXTRAFS) || defined(QSPIFLASH)
+  // the FS can mount fine yet contain corrupt block chains (e.g. after an
+  // interrupted flash op), in which case any later write follows a garbage
+  // pointer and hangs forever with LFS_NO_ASSERT. A bounded traversal detects
+  // this; reformat now rather than brick on the next save. Only done for the
+  // dedicated contacts/channels partition, never the identity-bearing FS.
+  if (_getLfsUsedBlockCount(_fsExtra) <= 0) {
+    MESH_DEBUG_PRINTLN("DataStore: contacts filesystem is corrupt, reformatting!");
+    _fsExtra->format();
+  }
+  #endif
+  _fs->remove(WRITE_TMP_NAME);   // discard temp file from an interrupted save
+  if (_fsExtra) _fsExtra->remove(WRITE_TMP_NAME);
   checkAdvBlobFile();
   #if defined(EXTRAFS) || defined(QSPIFLASH)
   migrateToSecondaryFS();
@@ -80,12 +110,16 @@ void DataStore::begin() {
 
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
 int _countLfsBlock(void *p, lfs_block_t block){
-      if (block > _ContactsChannelsTotalBlocks) {
+      if (block >= _ContactsChannelsTotalBlocks) {
         MESH_DEBUG_PRINTLN("ERROR: Block %d exceeds filesystem bounds - CORRUPTION DETECTED!", block);
         return LFS_ERR_CORRUPT;  // return error to abort lfs_traverse() gracefully
     }
   lfs_size_t *size = (lfs_size_t*) p;
   *size += 1;
+  if (*size > _ContactsChannelsTotalBlocks) {
+    MESH_DEBUG_PRINTLN("ERROR: traversal visited more blocks than exist - CORRUPTION DETECTED!");
+    return LFS_ERR_CORRUPT;  // block chain cycle would otherwise loop forever
+  }
     return 0;
 }
 
@@ -274,7 +308,7 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)_prefs.default_scope_name, sizeof(_prefs.default_scope_name));    // 90
     file.write((uint8_t *)_prefs.default_scope_key, sizeof(_prefs.default_scope_key));     // 121
 
-    file.close();
+    commitWrite(_fs, file, "/new_prefs");
   }
 }
 
@@ -338,7 +372,7 @@ void DataStore::saveContacts(DataStoreHost* host, bool (*filter)(const ContactIn
 
       idx++;  // advance to next contact
     }
-    file.close();
+    commitWrite(_getContactsChannelsFS(), file, "/contacts3");
   }
 }
 
@@ -383,7 +417,7 @@ void DataStore::saveChannels(DataStoreHost* host) {
       if (!success) break; // write failed
       channel_idx++;
     }
-    file.close();
+    commitWrite(_getContactsChannelsFS(), file, "/channels2");
   }
 }
 
@@ -407,7 +441,7 @@ void DataStore::checkAdvBlobFile() {
       for (int i = 0; i < MAX_BLOBRECS; i++) {     // pre-allocate to fixed size
         file.write((uint8_t *) &zeroes, sizeof(zeroes));
       }
-      file.close();
+      commitWrite(_getContactsChannelsFS(), file, "/adv_blobs");
     }
   }
 }
@@ -431,7 +465,7 @@ void DataStore::migrateToSecondaryFS() {
       }
     }
     if (oldAdvBlobs) oldAdvBlobs.close();
-    if (newAdvBlobs) newAdvBlobs.close();
+    if (newAdvBlobs) commitWrite(_fsExtra, newAdvBlobs, "/adv_blobs");
     _fs->remove("/adv_blobs");
     }
   }
@@ -448,7 +482,7 @@ void DataStore::migrateToSecondaryFS() {
         }
       }
       if (oldFile) oldFile.close();
-      if (newFile) newFile.close();
+      if (newFile) commitWrite(_fsExtra, newFile, "/contacts3");
       _fs->remove("/contacts3");
     }
   }
@@ -465,7 +499,7 @@ void DataStore::migrateToSecondaryFS() {
         }
       }
       if (oldFile) oldFile.close();
-      if (newFile) newFile.close();
+      if (newFile) commitWrite(_fsExtra, newFile, "/channels2");
       _fs->remove("/channels2");
     }
   }
@@ -483,7 +517,7 @@ void DataStore::migrateToSecondaryFS() {
         }
       }
       if (oldFile) oldFile.close();
-      if (newFile) newFile.close();
+      if (newFile) commitWrite(_fs, newFile, "/_main.id");
       _fsExtra->remove("/_main.id");
   }
   if (_fsExtra->exists("/new_prefs")) {
@@ -499,7 +533,7 @@ void DataStore::migrateToSecondaryFS() {
         }
       }
       if (oldFile) oldFile.close();
-      if (newFile) newFile.close();
+      if (newFile) commitWrite(_fs, newFile, "/new_prefs");
       _fsExtra->remove("/new_prefs");
   }
   // remove files from where they should not be anymore
